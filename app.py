@@ -1,10 +1,10 @@
 from flask import Flask, render_template, request, redirect, url_for, flash
-import sqlite3, os, csv, io
+import sqlite3, os
 from datetime import datetime
+from dateutil.relativedelta import relativedelta
 
 app = Flask(__name__)
 app.secret_key = "epargne-secret-2024"
-
 DB_PATH = "/share/epargne/epargne.db"
 
 def get_db():
@@ -45,56 +45,72 @@ def init_db():
 def calcul_stats_projet(projet, flux):
     interets_recus = sum(f["montant"] for f in flux if f["type"] == "interet")
     capital_rembourse = sum(f["montant"] for f in flux if f["type"] == "remboursement")
-    
-    try:
-        date_inv = datetime.strptime(projet["date_investissement"], "%Y-%m-%d")
-        if projet["date_fin"]:
-            date_fin = datetime.strptime(projet["date_fin"], "%Y-%m-%d")
-        else:
-            date_fin = datetime.today()
-        duree_reelle_mois = max(1, (date_fin.year - date_inv.year) * 12 + (date_fin.month - date_inv.month))
-    except:
-        duree_reelle_mois = projet["duree_mois"]
-
     interets_theoriques = projet["montant_investi"] * (projet["taux_interet"] / 100) * (projet["duree_mois"] / 12)
     capital_restant = projet["montant_investi"] - capital_rembourse
-
+    taux = min((interets_recus / interets_theoriques * 100) if interets_theoriques > 0 else 0, 100)
     return {
         "interets_recus": round(interets_recus, 2),
         "interets_theoriques": round(interets_theoriques, 2),
         "capital_rembourse": round(capital_rembourse, 2),
         "capital_restant": round(capital_restant, 2),
-        "taux_avancement": round((interets_recus / interets_theoriques * 100) if interets_theoriques > 0 else 0, 1),
+        "taux_avancement": round(taux, 1),
     }
 
+def get_enerfip_stats():
+    conn = get_db()
+    projets = conn.execute("SELECT * FROM enerfip_projets").fetchall()
+    total_investi = sum(p["montant_investi"] for p in projets)
+    total_interets = 0
+    for p in projets:
+        flux = conn.execute("SELECT * FROM enerfip_flux WHERE projet_id = ?", (p["id"],)).fetchall()
+        total_interets += sum(f["montant"] for f in flux if f["type"] == "interet")
+    conn.close()
+    return {
+        "investi": round(total_investi, 2),
+        "gains": round(total_interets, 2),
+        "valeur": round(total_investi + total_interets, 2),
+    }
+
+# ── Dashboard ──
 @app.route("/")
-def index():
+def dashboard():
+    enerfip = get_enerfip_stats()
+    total_investi = enerfip["investi"]
+    total_gains = enerfip["gains"]
+    total_patrimoine = enerfip["valeur"]
+    return render_template("dashboard.html",
+        active_page="dashboard",
+        enerfip=enerfip,
+        total_investi=total_investi,
+        total_gains=total_gains,
+        total_patrimoine=total_patrimoine,
+    )
+
+# ── Enerfip ──
+@app.route("/enerfip")
+def enerfip():
     conn = get_db()
     projets = conn.execute("SELECT * FROM enerfip_projets ORDER BY date_investissement DESC").fetchall()
-    
     projets_avec_stats = []
     total_investi = 0
     total_interets = 0
-
     for p in projets:
         flux = conn.execute("SELECT * FROM enerfip_flux WHERE projet_id = ? ORDER BY date", (p["id"],)).fetchall()
         stats = calcul_stats_projet(p, flux)
         projets_avec_stats.append({"projet": p, "flux": flux, "stats": stats})
         total_investi += p["montant_investi"]
         total_interets += stats["interets_recus"]
-
     conn.close()
-    return render_template("index.html",
+    return render_template("enerfip.html",
+        active_page="enerfip",
         projets=projets_avec_stats,
         total_investi=round(total_investi, 2),
         total_interets=round(total_interets, 2),
-        today=datetime.today().strftime("%Y-%m-%d")
     )
 
-@app.route("/projet/ajouter", methods=["POST"])
-def ajouter_projet():
+@app.route("/enerfip/projet/ajouter", methods=["POST"])
+def enerfip_ajouter_projet():
     d = request.form
-    from dateutil.relativedelta import relativedelta
     date_debut = datetime.strptime(d["date_investissement"], "%Y-%m-%d")
     duree = int(d["duree_mois"])
     date_fin = (date_debut + relativedelta(months=duree)).strftime("%Y-%m-%d")
@@ -108,10 +124,10 @@ def ajouter_projet():
     conn.commit()
     conn.close()
     flash("Projet ajouté.", "success")
-    return redirect(url_for("index"))
+    return redirect(url_for("enerfip"))
 
-@app.route("/flux/ajouter", methods=["POST"])
-def ajouter_flux():
+@app.route("/enerfip/flux/ajouter", methods=["POST"])
+def enerfip_ajouter_flux():
     d = request.form
     conn = get_db()
     conn.execute("""
@@ -121,27 +137,39 @@ def ajouter_flux():
     conn.commit()
     conn.close()
     flash("Mouvement ajouté.", "success")
-    return redirect(url_for("index"))
+    return redirect(url_for("enerfip"))
 
-@app.route("/projet/supprimer/<int:projet_id>", methods=["POST"])
-def supprimer_projet(projet_id):
+@app.route("/enerfip/projet/supprimer/<int:projet_id>", methods=["POST"])
+def enerfip_supprimer_projet(projet_id):
     conn = get_db()
     conn.execute("DELETE FROM enerfip_flux WHERE projet_id = ?", (projet_id,))
     conn.execute("DELETE FROM enerfip_projets WHERE id = ?", (projet_id,))
     conn.commit()
     conn.close()
     flash("Projet supprimé.", "info")
-    return redirect(url_for("index"))
+    return redirect(url_for("enerfip"))
 
-@app.route("/flux/supprimer/<int:flux_id>", methods=["POST"])
-def supprimer_flux(flux_id):
+@app.route("/enerfip/flux/supprimer/<int:flux_id>", methods=["POST"])
+def enerfip_supprimer_flux(flux_id):
     conn = get_db()
-    flux = conn.execute("SELECT projet_id FROM enerfip_flux WHERE id = ?", (flux_id,)).fetchone()
     conn.execute("DELETE FROM enerfip_flux WHERE id = ?", (flux_id,))
     conn.commit()
     conn.close()
     flash("Mouvement supprimé.", "info")
-    return redirect(url_for("index"))
+    return redirect(url_for("enerfip"))
+
+# ── Pages placeholder ──
+@app.route("/pea")
+def pea():
+    return render_template("placeholder.html", active_page="pea", titre="PEA", sous_titre="Boursobank — Bientôt disponible")
+
+@app.route("/epsor")
+def epsor():
+    return render_template("placeholder.html", active_page="epsor", titre="Epsor", sous_titre="Épargne salariale — Bientôt disponible")
+
+@app.route("/binance")
+def binance():
+    return render_template("placeholder.html", active_page="binance", titre="Binance", sous_titre="Crypto — Bientôt disponible")
 
 if __name__ == "__main__":
     init_db()
