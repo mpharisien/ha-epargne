@@ -94,13 +94,17 @@ def index():
 @app.route("/projet/ajouter", methods=["POST"])
 def ajouter_projet():
     d = request.form
+    from dateutil.relativedelta import relativedelta
+    date_debut = datetime.strptime(d["date_investissement"], "%Y-%m-%d")
+    duree = int(d["duree_mois"])
+    date_fin = (date_debut + relativedelta(months=duree)).strftime("%Y-%m-%d")
     conn = get_db()
     conn.execute("""
         INSERT INTO enerfip_projets (nom, date_investissement, montant_investi, taux_interet, duree_mois, date_fin, statut, notes)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     """, (d["nom"], d["date_investissement"], float(d["montant_investi"]),
-          float(d["taux_interet"]), int(d["duree_mois"]),
-          d.get("date_fin") or None, d.get("statut", "en cours"), d.get("notes", "")))
+          float(d["taux_interet"]), duree, date_fin,
+          d.get("statut", "en cours"), d.get("notes", "")))
     conn.commit()
     conn.close()
     flash("Projet ajouté.", "success")
