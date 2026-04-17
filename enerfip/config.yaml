@@ -1,7 +1,7 @@
-name: "Suivi Épargne"
-description: "Suivi de portefeuille — Enerfip, PEA, Épargne salariale"
+name: "Home Assistant Épargne"
+description: "Suivi de divers portefeuilles"
 version: "1.0.0"
-slug: "epargne"
+slug: "ha-epargne"
 init: false
 arch:
   - aarch64
